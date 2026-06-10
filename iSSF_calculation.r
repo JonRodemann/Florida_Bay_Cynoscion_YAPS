@@ -7,6 +7,7 @@ library(sf)
 library(furrr)
 library(purrr)
 library(ggeffects)
+library(landscapemetrics)
 
 #Start with Rankin
 rdat <- read.csv('Results/Rankin_full_hmm.csv')
@@ -40,6 +41,7 @@ steps_obsr <- fish_trackr %>%
   dplyr::filter(!is.na(ta_))
 
 # Generate random steps (10 random steps for every 1 observed step)
+set.seed(8)
 steps_randr <- steps_obsr %>%
   random_steps(n_control = 10)
 
@@ -269,21 +271,21 @@ plot_interaction_effect <- function(var_name, title_name, sdd, meand) {
 #PLAND
 str(strue)
 strue1 <- strue %>% drop_na()
-mean(strue1$pland)
+median(strue1$pland)
 sd(strue1$pland)
-plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 23.4859, 70.31617)
+plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 23.4859, 75.67568)
 print(plot_pland_interaction)
 
 #PD
-mean(strue1$pd)
+median(strue1$pd)
 sd(strue1$pd)
-plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 9548.752,16566.96)
+plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 9548.752,11326.31)
 print(plot_pd_interaction)
 
 #Shape_mn
-mean(strue1$shape_mn)
+median(strue1$shape_mn)
 sd(strue1$shape_mn)
-plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape",0.3579983,1.545075)
+plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape",0.3579983,1.485221)
 print(plot_shape_interaction)
 
 #amazing!!!! Let's save these plots and run for Johnson
