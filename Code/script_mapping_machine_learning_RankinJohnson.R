@@ -13,15 +13,95 @@ library(sf)
 library(terra)
 
 #load in datasets
-setwd('E:/FIU/Project/YAPS/Rankin_YAPS/')
+setwd('/Users/rodemann/Downloads')
 
-map <- stack('aerialmap.tif')
+tdr <- read.csv('Data_SAV_Rankin.csv')
+head(tdr)
+hist(tdr$Tot)
+map <- stack('Rodemann_Rankin_YAPS_psscene_analytic_8b_sr_udm2/PSScene/20210929_151027_20_2465_3B_AnalyticMS_SR_8b_clip.tif')
 #plot(map)
+plot(map)
 
-training_points_bare <- shapefile('Mapping/Training_points_bare.shp')
-training_points_sparse <- shapefile('Mapping/Training_points_sparse.shp')
-training_points_dense <- shapefile('Mapping/Training_points_dense.shp')
+#clip map
+rankclip <- shapefile('Rankin_clip.shp')
+  
+mapr <- raster::crop(map, rankclip)
+plot(mapr)
 
+#make into spatial data frame
+sftd <- tdr %>% 
+  st_as_sf(coords = c('East', 'North'), crs = 2958)
+
+plot(sftd)
+plot(map1)
+tpd <- extract(mapr, sftd)
+
+tpd <- cbind(tpd, tdr)
+head(tpd)
+tpd$class <- as.factor(tpd$class)
+
+head(tpd)
+
+training <- tpd %>% dplyr::select(-c(Point, Date, Tot, Tt, Hw, Sf, Drift, GC, CH, UTM.Easting, UTM.Northing)) 
+training2 <- tpd %>% dplyr::select(-c(Name, Timestamp, Latitude, Hw, Tt, C, bsd, map, Longitude, Accuracy.m., East, North))
+head(training2)
+#str(training)
+
+#set up machine learning
+rforestLearner <- makeLearner('regr.randomForest')
+SAVTask <- makeRegrTask(data = training2, target = 'Tot')
+SAVtrained <- train(rforestLearner, SAVTask)
+SAVtrained
+
+p <- predict(SAVtrained, newdata = training2) #overfitting easily can happen, evaluating on training set
+performance(p, measures = list(acc, mmce))
+
+#CV
+kfold_cv <- makeResampleDesc(method = 'RepCV', folds = 10, reps = 10)
+rforest_cv <- mlr::resample(rforestLearner, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
+rforest_cv
+#much better than decision tree!
+#optimize hyperparameters
+getParamSet(rforestLearner)
+
+rforestparam <- makeParamSet(
+  makeIntegerParam("mtry", lower = 1, upper = ncol(training) - 1),
+  makeIntegerParam("nodesize", lower = 1, upper = 10),
+  makeIntegerParam('ntree', lower = 250, upper = 750)
+)
+
+randSearch <- makeTuneControlRandom(maxit = 50)
+rforest_tuned <- tuneParams('regr.randomForest', 
+                            SAVTask,
+                            resampling = kfold_cv,
+                            par.set = rforestparam,
+                            control = randSearch)
+
+rforest2 <- setHyperPars(rforestLearner, par.vals = rforest_tuned$x)
+rforest2_trained <- train(rforest2, SAVTask)
+rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
+
+rforest2_trained
+getFeatureImportance(rforest2_trained)
+rforest2_model <- getLearnerModel(rforest2_trained)
+rforest2_modelsav <- getLearnerModel(SAVtrained)
+
+SAVmapr <- raster::predict(mapr, rforest2_model)
+plot(SAVmapr)
+writeRaster(SAVmapr, filename = 'rank_cover.tif')
+
+hist(SAVmapr)
+median(values(SAVmapr))
+
+reclass_df <- c(0, 31.88, 0,
+                31.88, 100, 1)
+reclass_m <- matrix(reclass_df,
+                    ncol = 3,
+                    byrow = TRUE)
+rmap1 <- classify(rast(SAVmapr),
+                  reclass_m)
+plot(rmap1)
+writeRaster(rmap1, 'rmap_dense.tif', overwrite = T)
 #extract values from map
 tpb_ex <- raster::extract(map, training_points_bare, df = T)
 #tpb_ex
@@ -297,14 +377,14 @@ write.csv(file = 'met_all.csv', met_all)
 met_all <- met_all %>% dplyr::rename(ID = plot_id) %>% tidyr::drop_na()
 
 ##Now with Johnson data!
-setwd('E:/FIU/PostDoc/CESI/Final_report/YAPS/')
+setwd('/Volumes/My Passport/FIU/PostDoc/CESI/Final_report/YAPS')
 
 image <- raster::stack('20230730_150134_07_2460_3B_AnalyticMS_SR_8b_harmonized_clip.tif')
 mask <- shapefile('John_mask.shp')
 
 #crop image
 map1 <- raster::crop(image, mask)
-
+plot(map1)
 #add in training data
 td <- read.csv('Data_Johnson_YAPS_GCP_5-2023.csv')
 
@@ -318,11 +398,13 @@ for (i in 1:nrow(td)) {
     td$class[i] <- 2
   }
 }
-
+hist(td$Tot)
 #make into spatial data frame
 sftd <- td %>% 
   st_as_sf(coords = c('UTM.Easting', 'UTM.Northing'), crs = 2958)
 
+plot(sftd)
+plot(map1)
 tpd <- extract(map1, sftd)
 
 tpd <- cbind(tpd, td)
@@ -376,16 +458,17 @@ rforest2_modelsav <- getLearnerModel(SAVtrained)
 
 SAVmap1 <- raster::predict(map1, rforest2_model)
 plot(SAVmap1)
-
+hist(SAVmap1)
+median(values(SAVmap1))
 writeRaster(SAVmap1, filename = 'johnclass2.tif', overwrite = T)
 
-setwd('E:/FIU/PostDoc/CESI/Final_report/YAPS/')
+setwd('/Volumes/My Passport/FIU/PostDoc/CESI/Final_report/YAPS')
 
 jmap <- rast('johnclass2.tif')
 plot(jmap)
-
-reclass_df <- c(0, 44.99999999, 0,
-                45, 100, 1)
+median(values(jmap))
+reclass_df <- c(0, 46.81, 0,
+                46.81, 100, 1)
 reclass_m <- matrix(reclass_df,
                     ncol = 3,
                     byrow = TRUE)

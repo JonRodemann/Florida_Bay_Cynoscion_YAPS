@@ -101,10 +101,23 @@ interp_df_20 %>% dplyr::filter(ID == '34510_56') %>%
   geom_point(aes(x = x, y = y))+
   theme_classic()
 
-id20 <- interp_df_20 %>% group_by(ID) %>% summarize(tott = max(ts)-min(ts))
+interp_df_20 %>% dplyr::filter(ID == '34510_383') %>% 
+  ggplot()+
+  geom_point(aes(x = x, y = y))+
+  theme_classic()
+
+id20 <- interp_df_20 %>% group_by(ID) %>% mutate(tott = max(ts)-min(ts)) %>% ungroup()
 id20$tottime <- as.numeric(id20$tott)
 hist(id20$tottime/60, freq = F, breaks = 30)
-#3) Step length and turn angles for HMM
+min(id20$tottime/60)
+nrow(as.data.frame(unique(id20$ID)))
+
+id20_20 <- id20 %>% dplyr::filter(tottime >= 1200)
+nrow(as.data.frame(unique(id20_20$ID)))
+hist(id20_20$tottime/60)
+id20_30 <- id20 %>% dplyr::filter(tottime >= 1800)
+nrow(as.data.frame(unique(id20_30$ID)))
+#3) Step length and turn angles for HMM - 20 minutes in array
 # moveHMM expects columns: ID, x, y (named exactly "ID" by default for prepData),
 # and it will create 'step' and 'angle' (in radians), and 'x'/'y' must be in meters if you want step in meters.
 
@@ -112,7 +125,7 @@ hist(id20$tottime/60, freq = F, breaks = 30)
 # Run prepData to compute steps/angles on the new ID column
 # The function prepData can accept a "type" argument; set type = "UTM" if coords are planar meters.
 # moveHMM's prepData expects the data sorted by ID and time
-interp_df_20 <- interp_df_20 %>% arrange(ID, ts)
+interp_df_20 <- id20_20 %>% arrange(ID, ts)
 interp_df_20 <- interp_df_20 %>% group_by(ID) %>% filter(n()>= 20) %>% ungroup
 # prepData: coordinate names are "x" and "y" in our frame
 hmm_data_20 <- prepData(interp_df_20, type = "UTM", coordNames = c("x", "y"))
@@ -132,9 +145,9 @@ hmm_data_20 <- hmm_data_20 %>%
 summary(hmm_data_20$step)
 summary(hmm_data_20$angle)
 hist(hmm_data_20$step, breaks = 20, freq = F, main = "Step lengths")
-curve(dgamma(x,0.75,rate=0.9), n=200, add=TRUE, col="royalblue", lwd=4)
-curve(dgamma(x,2,rate=0.6), n=200, add=TRUE, col="cadetblue", lwd=4)
-#curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
+curve(dgamma(x,1.5,rate=0.9), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(dgamma(x,2.2,rate=0.7), n=200, add=TRUE, col="cadetblue", lwd=4)
+curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
 hist(hmm_data_20$angle, breaks = 30, freq = F, main = "Turn angles")
 curve(circular::dvonmises(x,pi,0.01), n=200, add=TRUE, col="royalblue", lwd=4)
 curve(circular::dvonmises(x,0,7), n=200, add=TRUE, col="cadetblue", lwd=4)
@@ -147,15 +160,57 @@ sl_init_sd <- c(sqrt(2)/0.6, sqrt(0.75)/0.9)
 ta_init_mean <- c(0, pi)
 ta_init_con <- c(7, 0.01)
 
-mod <- fitHMM(data = hmm_data_20,
+mod20 <- fitHMM(data = hmm_data_20,
               nbStates = 2,
               stepPar0 = c(sl_init_mean, sl_init_sd),
               anglePar0 = c(ta_init_mean, ta_init_con),
               formula = ~1)
-unique(hmm_data_20$ID)
-mod
-plot(mod)
 
+#30 minute tracks instead of 20
+interp_df_30 <- id20_30 %>% arrange(ID, ts)
+interp_df_30 <- interp_df_30 %>% group_by(ID) %>% filter(n()>= 30) %>% ungroup
+# prepData: coordinate names are "x" and "y" in our frame
+hmm_data_30 <- prepData(interp_df_30, type = "UTM", coordNames = c("x", "y"))
+
+# moveHMM uses a column 'step' and 'angle' (radians) created by prepData
+# Remove rows with zero or NA step (stay/missing movement) because gamma requires positive steps
+hmm_data_30 <- hmm_data_30 %>% filter(!is.na(step) & step > 0) %>% filter(!is.na(angle))
+
+hmm_data_30 <- hmm_data_30 %>%
+  filter(is.finite(step), is.finite(angle), step > 0) %>%
+  mutate(
+    step = pmax(step, quantile(step, 0.01, na.rm = TRUE)),
+    step = pmin(step, quantile(step, 0.99, na.rm = TRUE))
+  )
+
+
+summary(hmm_data_20$step)
+summary(hmm_data_20$angle)
+hist(hmm_data_30$step, breaks = 20, freq = F, main = "Step lengths")
+curve(dgamma(x,1.5,rate=0.9), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(dgamma(x,2.2,rate=0.7), n=200, add=TRUE, col="cadetblue", lwd=4)
+curve(dgamma(x,1.2,rate=0.02), n=200, add=TRUE, col="navyblue", lwd=4)
+hist(hmm_data_30$angle, breaks = 30, freq = F, main = "Turn angles")
+curve(circular::dvonmises(x,pi,0.01), n=200, add=TRUE, col="royalblue", lwd=4)
+curve(circular::dvonmises(x,0,7), n=200, add=TRUE, col="cadetblue", lwd=4)
+
+
+#4) fit HMMs!
+#look at histograms and get numbers
+sl_init_mean <- c(2.2/0.7, 1.5/0.9)
+sl_init_sd <- c(sqrt(2.2)/0.7, sqrt(1.5)/0.9)
+ta_init_mean <- c(0, pi)
+ta_init_con <- c(7, 0.01)
+
+mod30 <- fitHMM(data = hmm_data_30,
+                nbStates = 2,
+                stepPar0 = c(sl_init_mean, sl_init_sd),
+                anglePar0 = c(ta_init_mean, ta_init_con),
+                formula = ~1)
+
+
+
+AIC(mod20, mod30)
 #remove tracks that do not look good
 hmm_data_20_2 <- hmm_data_20 %>% dplyr::filter(!ID %in% c('34501_39','34501_40','34501_44','34501_51','34501_7','34507_1','34507_14','34507_15',
                                                        '34507_27','34507_29','34507_3','34507_33','34507_40','34507_43','34507_57','34507_59',
