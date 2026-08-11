@@ -24,7 +24,7 @@ plot(map)
 
 #clip map
 rankclip <- shapefile('Rankin_clip.shp')
-  
+plot(rankclip)
 mapr <- raster::crop(map, rankclip)
 plot(mapr)
 
@@ -45,7 +45,8 @@ head(tpd)
 training <- tpd %>% dplyr::select(-c(Point, Date, Tot, Tt, Hw, Sf, Drift, GC, CH, UTM.Easting, UTM.Northing)) 
 training2 <- tpd %>% dplyr::select(-c(Name, Timestamp, Latitude, Hw, Tt, C, bsd, map, Longitude, Accuracy.m., East, North))
 head(training2)
-#str(training)
+training3 <- training2 %>% mutate(ds = if_else(Tot >= 32, 1, 0)) %>% dlpyr::select(-Tot)
+head(training3)
 
 #set up machine learning
 rforestLearner <- makeLearner('regr.randomForest')
@@ -65,12 +66,12 @@ rforest_cv
 getParamSet(rforestLearner)
 
 rforestparam <- makeParamSet(
-  makeIntegerParam("mtry", lower = 1, upper = ncol(training) - 1),
+  makeIntegerParam("mtry", lower = 2, upper = ncol(training2) - 1),
   makeIntegerParam("nodesize", lower = 1, upper = 10),
   makeIntegerParam('ntree', lower = 250, upper = 750)
 )
-
-randSearch <- makeTuneControlRandom(maxit = 50)
+set.seed(19)
+randSearch <- makeTuneControlRandom(maxit = 500)
 rforest_tuned <- tuneParams('regr.randomForest', 
                             SAVTask,
                             resampling = kfold_cv,
@@ -82,26 +83,101 @@ rforest2_trained <- train(rforest2, SAVTask)
 rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
 
 rforest2_trained
+str(rforest2_trained)
+rforest2_trained$learner.model
+oob_mse <- tail(rforest2_trained$learner.model$mse, 1)
+print(oob_mse)
+oob_preds <- getOOBPreds(rforest2_trained, task = SAVTask)
+
+# Calculate OOB MSE or RMSE
+performance(oob_preds, measures = mse)
+# Or for RMSE:
+performance(oob_preds, measures = rmse)
+sd(training2$Tot)
+
 getFeatureImportance(rforest2_trained)
 rforest2_model <- getLearnerModel(rforest2_trained)
 rforest2_modelsav <- getLearnerModel(SAVtrained)
 
 SAVmapr <- raster::predict(mapr, rforest2_model)
 plot(SAVmapr)
-writeRaster(SAVmapr, filename = 'rank_cover.tif')
+
+
+training3$ds <- as.factor(training3$ds)
+#binary predictor
+#set up machine learning
+rforestLearner <- makeLearner('classif.randomForest')
+SAVTask <- makeClassifTask(data = training3, target = 'ds')
+SAVtrained <- train(rforestLearner, SAVTask)
+SAVtrained
+
+p <- predict(SAVtrained, newdata = training3) #overfitting easily can happen, evaluating on training set
+performance(p, measures = list(acc, mmce))
+
+#CV
+kfold_cv <- makeResampleDesc(method = 'RepCV', folds = 10, reps = 10)
+rforest_cv <- mlr::resample(rforestLearner, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
+rforest_cv
+#much better than decision tree!
+#optimize hyperparameters
+getParamSet(rforestLearner)
+
+rforestparam <- makeParamSet(
+  makeIntegerParam("mtry", lower = 1, upper = ncol(training2) - 1),
+  makeIntegerParam("nodesize", lower = 1, upper = 10),
+  makeIntegerParam('ntree', lower = 250, upper = 750)
+)
+set.seed(19)
+randSearch <- makeTuneControlRandom(maxit = 500)
+rforest_tuned <- tuneParams('classif.randomForest', 
+                            SAVTask,
+                            resampling = kfold_cv,
+                            par.set = rforestparam,
+                            control = randSearch)
+
+rforest2 <- setHyperPars(rforestLearner, par.vals = rforest_tuned$x)
+rforest2_trained <- train(rforest2, SAVTask)
+rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
+
+rforest2_trained
+str(rforest2_trained)
+rforest2_trained$learner.model
+oob_mse <- tail(rforest2_trained$learner.model$mse, 1)
+print(oob_mse)
+oob_preds <- getOOBPreds(rforest2_trained, task = SAVTask)
+
+# Calculate OOB MSE or RMSE
+performance(oob_preds, measures = mse)
+# Or for RMSE:
+performance(oob_preds, measures = rmse)
+sd(training2$Tot)
+
+getFeatureImportance(rforest2_trained)
+rforest2_model <- getLearnerModel(rforest2_trained)
+rforest2_modelsav <- getLearnerModel(SAVtrained)
+
+SAVmapr <- raster::predict(mapr, rforest2_model)
+plot(SAVmapr)
+
+rankmap1 <- rast('/Users/rodemann/Cynoscion_YAPS_FB/Data/Rankin_map.tif')
+plot(rankmap1)
+#writeRaster(SAVmapr, filename = 'rank_cover.tif')
 
 hist(SAVmapr)
 median(values(SAVmapr))
 
-reclass_df <- c(0, 31.88, 0,
-                31.88, 100, 1)
+reclass_df <- c(0, 31.68, 0,
+                31.68, 100, 1)
 reclass_m <- matrix(reclass_df,
                     ncol = 3,
                     byrow = TRUE)
 rmap1 <- classify(rast(SAVmapr),
                   reclass_m)
 plot(rmap1)
-writeRaster(rmap1, 'rmap_dense.tif', overwrite = T)
+cellSize(rmap1)
+plot(rankmap1)
+cellSize(rankmap1)
+writeRaster(rmap1, '/Users/rodemann/Cynoscion_YAPS_FB/Data/Rankin_map1.tif', overwrite = T)
 #extract values from map
 tpb_ex <- raster::extract(map, training_points_bare, df = T)
 #tpb_ex

@@ -183,7 +183,7 @@ hmm_data_30 <- hmm_data_30 %>%
     step = pmin(step, quantile(step, 0.99, na.rm = TRUE))
   )
 
-
+write.csv(hmm_data_30, file = 'Data/rankin_hmm_dat_30.csv')
 summary(hmm_data_20$step)
 summary(hmm_data_20$angle)
 hist(hmm_data_30$step, breaks = 20, freq = F, main = "Step lengths")
@@ -395,7 +395,7 @@ head(j20)
 
 interp_list_j20 <- j20 %>%
   group_by(.data[[id_col]], .data[[track_col]]) %>%
-  group_map(~ interpolate_track(.x, dt_seconds = 40), .keep = TRUE)
+  group_map(~ interpolate_track(.x, dt_seconds = 60), .keep = TRUE)
 
 # Remove NULLs (tracks that couldn't be interpolated)
 interp_list_j20 <- keep(interp_list_j20, ~ !is.null(.x) && nrow(.x) > 0)
@@ -405,23 +405,23 @@ interp_df_j20 <- interp_df_j20 %>% mutate(ID = paste(tag, track, sep = "_"))
 head(interp_df_j20)
 
 interp_df_j20 <- interp_df_j20 %>% arrange(ID, ts)
-interp_df_j20 <- interp_df_j20 %>% group_by(ID) %>% filter(n()>= 30) %>% ungroup() #track for at least 20 minutes
+interp_df_j30 <- interp_df_j20 %>% group_by(ID) %>% filter(n()>= 30) %>% ungroup() #track for at least 30 minutes
 # prepData: coordinate names are "x" and "y" in our frame
-hmm_data_j20 <- prepData(interp_df_j20, type = "UTM", coordNames = c("x", "y"))
+hmm_data_j30 <- prepData(interp_df_j30, type = "UTM", coordNames = c("x", "y"))
 
 # moveHMM uses a column 'step' and 'angle' (radians) created by prepData
 # Remove rows with zero or NA step (stay/missing movement) because gamma requires positive steps
-hmm_data_j20 <- hmm_data_j20 %>% filter(!is.na(step) & step > 0) %>% filter(!is.na(angle))
+hmm_data_j30 <- hmm_data_j30 %>% filter(!is.na(step) & step > 0) %>% filter(!is.na(angle))
 
-hmm_data_j20 <- hmm_data_j20 %>%
+hmm_data_j30 <- hmm_data_j30 %>%
   filter(is.finite(step), is.finite(angle), step > 0) %>%
   mutate(
     step = pmax(step, quantile(step, 0.01, na.rm = TRUE)),
     step = pmin(step, quantile(step, 0.99, na.rm = TRUE))
   )
 
-head(hmm_data_j20)
-
+head(hmm_data_j30)
+write.csv(hmm_data_j30, file = 'Data/johnson_hmm_dat_30.csv')
 summary(hmm_data_j20$step)
 summary(hmm_data_j20$angle)
 hist(hmm_data_j20$step, breaks = 20, freq = F, main = "Step lengths")
