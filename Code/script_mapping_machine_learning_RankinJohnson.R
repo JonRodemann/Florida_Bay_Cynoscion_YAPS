@@ -13,12 +13,12 @@ library(sf)
 library(terra)
 
 #load in datasets
-setwd('/Users/rodemann/Downloads')
 
 tdr <- read.csv('Data_SAV_Rankin.csv')
 head(tdr)
 hist(tdr$Tot)
-map <- stack('Rodemann_Rankin_YAPS_psscene_analytic_8b_sr_udm2/PSScene/20210929_151027_20_2465_3B_AnalyticMS_SR_8b_clip.tif')
+map <- stack('aerialmap.tif')
+tdr1 <- read.csv('/Users/rodemann/Cynoscion_YAPS_FB/Data/Rankin_novtrain.csv')
 #plot(map)
 plot(map)
 
@@ -28,33 +28,52 @@ plot(rankclip)
 mapr <- raster::crop(map, rankclip)
 plot(mapr)
 
-#make into spatial data frame
-sftd <- tdr %>% 
-  st_as_sf(coords = c('East', 'North'), crs = 2958)
+rank_bare <- shapefile('Mapping/Training_points_bare.shp')
+rank_sparse <- shapefile('Mapping/Training_points_sparse.shp')
+rank_dense <- shapefile('Mapping/Training_points_dense.shp')
+rank_b <- bind_rows(rank_bare, rank_sparse)
 
+#combine both training datasets
+head(tdr)
+head(tdr2)
+
+tdr2 <- tdr %>% dplyr::select(c(Name, Latitude, Longitude, Tot)) %>% dplyr::rename(Site = Name, lat = Latitude, long = Longitude)
+tdr3 <- tdr1 %>% dplyr::select(c(Site, lat, long, Tot))
+tdr3$Site <- as.character(tdr3$Site)
+td <- rbind(tdr2, tdr3)
+
+#maketdr#make into spatial data frame
+sftd <- td %>% 
+  st_as_sf(coords = c('long', 'lat'), crs = 4326) %>% 
+  st_transform(crs = 32617)
+st_crs(mapr)
 plot(sftd)
-plot(map1)
-tpd <- extract(mapr, sftd)
+plot(mapr)
+rs <- as.data.frame(extract(mapr, rank_sparse)) %>% mutate(class = 'bs')
+rb <- as.data.frame(extract(mapr, rank_bare)) %>% mutate(class = 'bs')
+rd <- as.data.frame(extract(mapr, rank_dense)) %>% mutate(class = 'd')
 
-tpd <- cbind(tpd, tdr)
+tpd <- rbind(rs, rb)
+tpd <- rbind(tpd, rd)
+
 head(tpd)
-tpd$class <- as.factor(tpd$class)
 
-head(tpd)
-
-training <- tpd %>% dplyr::select(-c(Point, Date, Tot, Tt, Hw, Sf, Drift, GC, CH, UTM.Easting, UTM.Northing)) 
-training2 <- tpd %>% dplyr::select(-c(Name, Timestamp, Latitude, Hw, Tt, C, bsd, map, Longitude, Accuracy.m., East, North))
-head(training2)
-training3 <- training2 %>% mutate(ds = if_else(Tot >= 32, 1, 0)) %>% dlpyr::select(-Tot)
-head(training3)
+#training2 <- tpd %>% dplyr::select(-c(Site, lat, long))
+#head(training2)
+#training2 <- training2 %>% dplyr::select(-nir)
+#training2 <- training2 %>% dplyr::select(-c(coastal_blue, rededge))
+#training3 <- training2 %>% mutate(ds = if_else(Tot >= 32, 1, 0)) %>% dlpyr::select(-Tot)
+#head(training3)
+training <- tpd %>% dplyr::select(-aerialmap_4)
+training$class <- as.factor(training$class)
 
 #set up machine learning
-rforestLearner <- makeLearner('regr.randomForest')
-SAVTask <- makeRegrTask(data = training2, target = 'Tot')
+rforestLearner <- makeLearner('classif.randomForest')
+SAVTask <- makeClassifTask(data = training, target = 'class')
 SAVtrained <- train(rforestLearner, SAVTask)
 SAVtrained
 
-p <- predict(SAVtrained, newdata = training2) #overfitting easily can happen, evaluating on training set
+p <- predict(SAVtrained, newdata = training) #overfitting easily can happen, evaluating on training set
 performance(p, measures = list(acc, mmce))
 
 #CV
@@ -66,12 +85,12 @@ rforest_cv
 getParamSet(rforestLearner)
 
 rforestparam <- makeParamSet(
-  makeIntegerParam("mtry", lower = 2, upper = ncol(training2) - 1),
+  makeIntegerParam("mtry", lower = 1, upper = ncol(training2) - 1),
   makeIntegerParam("nodesize", lower = 1, upper = 10),
   makeIntegerParam('ntree', lower = 250, upper = 750)
 )
 set.seed(19)
-randSearch <- makeTuneControlRandom(maxit = 500)
+randSearch <- makeTuneControlRandom(maxit = 100)
 rforest_tuned <- tuneParams('regr.randomForest', 
                             SAVTask,
                             resampling = kfold_cv,
@@ -80,7 +99,7 @@ rforest_tuned <- tuneParams('regr.randomForest',
 
 rforest2 <- setHyperPars(rforestLearner, par.vals = rforest_tuned$x)
 rforest2_trained <- train(rforest2, SAVTask)
-rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
+rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(mse, rmse))
 
 rforest2_trained
 str(rforest2_trained)
@@ -93,6 +112,7 @@ oob_preds <- getOOBPreds(rforest2_trained, task = SAVTask)
 performance(oob_preds, measures = mse)
 # Or for RMSE:
 performance(oob_preds, measures = rmse)
+sd(training2$Tot)
 sd(training2$Tot)
 
 getFeatureImportance(rforest2_trained)
@@ -166,8 +186,8 @@ plot(rankmap1)
 hist(SAVmapr)
 median(values(SAVmapr))
 
-reclass_df <- c(0, 31.68, 0,
-                31.68, 100, 1)
+reclass_df <- c(0, 32.1, 0,
+                32.1, 100, 1)
 reclass_m <- matrix(reclass_df,
                     ncol = 3,
                     byrow = TRUE)
@@ -177,7 +197,7 @@ plot(rmap1)
 cellSize(rmap1)
 plot(rankmap1)
 cellSize(rankmap1)
-writeRaster(rmap1, '/Users/rodemann/Cynoscion_YAPS_FB/Data/Rankin_map1.tif', overwrite = T)
+writeRaster(rmap1, '/Users/rodemann/Cynoscion_YAPS_FB/Data/Rankin_map_test.tif', overwrite = T)
 #extract values from map
 tpb_ex <- raster::extract(map, training_points_bare, df = T)
 #tpb_ex
@@ -453,31 +473,22 @@ write.csv(file = 'met_all.csv', met_all)
 met_all <- met_all %>% dplyr::rename(ID = plot_id) %>% tidyr::drop_na()
 
 ##Now with Johnson data!
-setwd('/Volumes/My Passport/FIU/PostDoc/CESI/Final_report/YAPS')
 
-image <- raster::stack('20230730_150134_07_2460_3B_AnalyticMS_SR_8b_harmonized_clip.tif')
-mask <- shapefile('John_mask.shp')
 
+image <- raster::stack('/Users/rodemann/Downloads/Johnson_NAIP_2023_RasterClip.tif')
+plot(image)
+jbare <- read.csv('Data/johnbare.csv') %>% dplyr::select(-c(id, Long, Lat)) %>% mutate(class = 'Bare')
+jdense <- read.csv('Data/johndense.csv') %>% dplyr::select(-id) %>% mutate(class = 'Dense')
 #crop image
-map1 <- raster::crop(image, mask)
+map1 <- image
 plot(map1)
 #add in training data
-td <- read.csv('Data_Johnson_YAPS_GCP_5-2023.csv')
 
-#add in dense, sparse, bare
-for (i in 1:nrow(td)) {
-  if (td$Tot[i] <= 20) {
-    td$class[i] <- 0
-  } else if (td$Tot[i] > 20 & td$Tot[i] <= 40) {
-    td$class[i] <- 1
-  } else {
-    td$class[i] <- 2
-  }
-}
-hist(td$Tot)
+td <- rbind(jbare, jdense)
+
 #make into spatial data frame
 sftd <- td %>% 
-  st_as_sf(coords = c('UTM.Easting', 'UTM.Northing'), crs = 2958)
+  st_as_sf(coords = c('x', 'y'), crs = 2958)
 
 plot(sftd)
 plot(map1)
@@ -489,17 +500,17 @@ tpd$class <- as.factor(tpd$class)
 
 head(tpd)
 
-training <- tpd %>% dplyr::select(-c(Point, Date, Tot, Tt, Hw, Sf, Drift, GC, CH, UTM.Easting, UTM.Northing)) 
-training2 <- tpd %>% dplyr::select(-c(Point, Date, Tt, Hw, Sf, Drift, GC, CH, UTM.Easting, UTM.Northing, class))
+training <- tpd %>% dplyr::select(-c(x, y, Band_4)) 
+
 #str(training)
 
 #set up machine learning
-rforestLearner <- makeLearner('regr.randomForest')
-SAVTask <- makeRegrTask(data = training2, target = 'Tot')
+rforestLearner <- makeLearner('classif.randomForest')
+SAVTask <- makeClassifTask(data = training, target = 'class')
 SAVtrained <- train(rforestLearner, SAVTask)
 SAVtrained
 
-p <- predict(SAVtrained, newdata = training2) #overfitting easily can happen, evaluating on training set
+p <- predict(SAVtrained, newdata = training) #overfitting easily can happen, evaluating on training set
 performance(p, measures = list(acc, mmce))
 
 #CV
@@ -515,9 +526,9 @@ rforestparam <- makeParamSet(
   makeIntegerParam("nodesize", lower = 1, upper = 10),
   makeIntegerParam('ntree', lower = 250, upper = 750)
 )
-
-randSearch <- makeTuneControlRandom(maxit = 50)
-rforest_tuned <- tuneParams('regr.randomForest', 
+set.seed(19)
+randSearch <- makeTuneControlRandom(maxit = 100)
+rforest_tuned <- tuneParams('classif.randomForest', 
                             SAVTask,
                             resampling = kfold_cv,
                             par.set = rforestparam,
@@ -528,30 +539,38 @@ rforest2_trained <- train(rforest2, SAVTask)
 rforest2_cv <- mlr::resample(rforest2, task = SAVTask, resampling = kfold_cv, measures = list(acc, mmce))
 
 rforest2_trained
+str(rforest2_trained)
+rforest2_trained$learner.model
+
+# Calculate OOB MSE or RMSE
+performance(oob_preds, measures = mse)
+# Or for RMSE:
+performance(oob_preds, measures = rmse)
+sd(training2$Tot)
+rforest2_trained
 getFeatureImportance(rforest2_trained)
 rforest2_model <- getLearnerModel(rforest2_trained)
 rforest2_modelsav <- getLearnerModel(SAVtrained)
 
 SAVmap1 <- raster::predict(map1, rforest2_model)
 plot(SAVmap1)
-hist(SAVmap1)
-median(values(SAVmap1))
-writeRaster(SAVmap1, filename = 'johnclass2.tif', overwrite = T)
 
-setwd('/Volumes/My Passport/FIU/PostDoc/CESI/Final_report/YAPS')
 
-jmap <- rast('johnclass2.tif')
+
+
+jmap <- SAVmap1
 plot(jmap)
 median(values(jmap))
-reclass_df <- c(0, 46.81, 0,
-                46.81, 100, 1)
+reclass_df <- c(0, 1, 0,
+                1, 2, 1)
 reclass_m <- matrix(reclass_df,
                     ncol = 3,
                     byrow = TRUE)
-jmap1 <- classify(jmap,
+?classify
+jmap1 <- classify(rast(jmap),
                       reclass_m)
 plot(jmap1)
-writeRaster(jmap1, 'jmap_dense.tif', overwrite = T)
+writeRaster(jmap1, 'Data/Maps/jmap_dense.tif', overwrite = T)
 dim(jmap1)
 #let's run it and hope...
 dat_john <- read.csv('Seatrout_positions_sd10.csv')

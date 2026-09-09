@@ -22,28 +22,12 @@ library(mgcv)
 #load in data
 jmap <- rast('Data/Maps/jmap_dense.tif')
 plot(jmap)
-rmap <- rast('Data/Maps/savclass_2.tif')
+rmap <- rast('Data/Maps/rmap_dense.tif')
 plot(rmap)
-jdat <- read_csv('Results/interpolated_hmm_states_Johnson_20.csv')
-rdat <- read_csv('Results/interpolated_hmm_states_Rankin_20.csv')
+jdat <- read_csv('Data/interpolated_hmm_states_Johnson_30.csv')
+rdat <- read_csv('Data/interpolated_hmm_states_Rankin_30.csv')
 
-#Aggregate and resample Rankin map
-#aggregate to 1 m
-str(rmap)
-rmap <- terra::aggregate(rmap, fact = 3, fun='modal')
-plot(rmap)
 
-reclass_df <- c(0, 1, 0,
-                1, 2, 0,
-                2, 3, 1)
-reclass_m <- matrix(reclass_df,
-                    ncol = 3,
-                    byrow = TRUE)
-rmap <- classify(rmap,
-                        reclass_m)
-plot(rmap)
-writeRaster(jmap, filename = 'Data/Johnson_map.tif')
-writeRaster(rmap, filename = 'Data/Rankin_map.tif')
 #extract values to points from HMMs
 #make hmm datasets spatial objects
 jdats <- st_as_sf(jdat, coords = c("x", "y"), crs = st_crs(jmap))
@@ -55,8 +39,8 @@ plot(rmap)
 plot(rdats, add = T, pch = 19, col = rdats$state)
 
 #extract
-rdate <- terra::extract(rmap, rdats, xy = T, ID = F) %>% bind_cols(rdats) %>% mutate(class = if_else(savclass_2 == 1,2,1)) %>% drop_na() %>% dplyr::select(-savclass_2)
-jdate <- terra::extract(jmap, jdats, xy = T, ID = F) %>% bind_cols(jdats) %>% mutate(class = if_else(johnclass2 == 1,2,1)) %>% drop_na() %>% dplyr::select(-johnclass2)
+rdate <- terra::extract(rmap, rdats, xy = T, ID = F) %>% bind_cols(rdats) %>% mutate(class = if_else(rmap_dense == 1,2,1)) %>% drop_na() %>% dplyr::select(-rmap_dense)
+jdate <- terra::extract(jmap, jdats, xy = T, ID = F) %>% bind_cols(jdats) %>% mutate(class = if_else(layer == 1,2,1)) %>% drop_na() %>% dplyr::select(-layer)
 
 #sucess! Let's look at first relationships between state and class
 rdate$class <- as.factor(rdate$class)
@@ -82,18 +66,18 @@ jchi$p.value
 #Rankin first
 rcoord <- as.data.frame(cbind(rdate$x, rdate$y))
 rcoord_sf <- st_as_sf(rcoord, coords = c("V1", "V2"), crs = st_crs(rmap))
-?st_crs
+
 library(furrr)
-plan(multisession)  # Use multisession to run on multiple cores
+plan(multisession, workers = max(1, parallel::detectCores() - 1))  # Use multisession to run on multiple cores
 library(purrr)
 
 result_metr <- 1:nrow(rcoord_sf) %>% future_map(
   function(i) {
-    rmap_r <- rast("Data/Rankin_map.tif")
+    rmap_r <- rast("Data/Maps/rmap_dense.tif")
     sample_lsm(
       rmap_r,
       y = st_geometry(rcoord_sf[i, ]),  # Ensure geometry is passed
-      size = 5,
+      size = 15,
       what = c(
         "lsm_c_pd", "lsm_c_ed",
         "lsm_c_division",
@@ -135,19 +119,19 @@ names(metr1)
 
 rankd <- metr1 %>% dplyr::select(c(division, ed, pd, pland, shape_mn)) %>% bind_cols(rdate)
 rankdat <- rankd %>% as.data.frame %>% dplyr::select(-geometry)
-write.csv(rankdat, file = 'Results/Rankin_full_hmm.csv')
+write.csv(rankdat, file = 'Data/Rankin_full_hmm.csv')
 #rankd is the Rankin dataset to run models on
 
 #now Johnson
 jcoord <- as.data.frame(cbind(jdate$x, jdate$y))
 jcoord_sf <- st_as_sf(jcoord, coords = c("V1", "V2"), crs = st_crs(jmap))
 
-plan(multisession)  # Use multisession to run on multiple cores
+plan(multisession, workers = max(1, parallel::detectCores() - 1))  # Use multisession to run on multiple cores
 
 
 result_metj <- 1:nrow(jcoord_sf) %>% future_map(
   function(i) {
-    jmap_r <- rast("Data/Johnson_map.tif")
+    jmap_r <- rast("Data/Maps/jmap_dense.tif")
     sample_lsm(
       jmap_r,
       y = st_geometry(jcoord_sf[i, ]),  # Ensure geometry is passed
@@ -193,9 +177,9 @@ names(metj1)
 
 johnd <- metj1 %>% dplyr::select(c(division, ed, pd, pland, shape_mn)) %>% bind_cols(jdate)
 johndat <- johnd %>% as.data.frame() %>% dplyr::select(-geometry)
-write.csv(johndat, file = 'Results/Johnson_full_hmm.csv')
+write.csv(johndat, file = 'Data/Johnson_full_hmm.csv')
 
-#Let's try some modelling! - none are significant before RF
+#Let's try some modelling!
 
 #Rankin
 rankd2 <- rankd %>% mutate(state_int = if_else(state == '2',1,0)) %>% drop_na()
@@ -225,7 +209,7 @@ johnmodgam <- gam(state_int ~ class + s(pland) + s(pd) + s(ed) + s(shape_mn) + s
 summary(johnmodgam)
 check_model(johnmodgam)
 performance(johnmodgam)
-
+plot(jmap)
 #GAMMs do not have a great outcome. GLMMs are not working. I am going to try RF and see. It could be that there is no relationship
 #do it for both, Rankin is first
 rankd <- read_csv('Results/Rankin_full_hmm.csv')
@@ -238,7 +222,7 @@ johnd$class <- as.factor(johnd$class)
 #randomly select 70% of state 1 and state 2 for training
 head(rankd)
 rankd$ID <- 1:nrow(rankd)
-set.seed(1919)
+set.seed(19)
 rsfr1 <- rankd %>% dplyr::filter(state == '1') %>% slice_sample(prop = 0.7)
 rsfr2 <- rankd %>% dplyr::filter(state == '2') %>% slice_sample(prop = 0.7)
 

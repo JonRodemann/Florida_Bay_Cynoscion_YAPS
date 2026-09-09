@@ -10,12 +10,14 @@ library(ggeffects)
 library(landscapemetrics)
 
 #Start with Rankin
-rdat <- read.csv('Results/Rankin_full_hmm.csv')
-rmap <- rast('Data/Rankin_map.tif')
+rdat <- read.csv('Data/Rankin_full_hmm.csv')
+rmap <- rast('Data/Maps/rmap_dense.tif')
+unique(jdat$ID)
+rdat %>% dplyr::group_by()
 str(rdat)
 plot(rmap)
 ?make_track
-
+plot(rmap)
 fish_trackr <- rdat %>%
   mutate(ID = as.factor(ID), 
          class = as.factor(class),
@@ -40,34 +42,34 @@ steps_obsr <- fish_trackr %>%
   steps(keep_cols = 'end') %>% 
   dplyr::filter(!is.na(ta_))
 
-# Generate random steps (10 random steps for every 1 observed step)
-set.seed(8)
+# Generate random steps (100 random steps for every 1 observed step)
+set.seed(19)
 steps_randr <- steps_obsr %>%
-  random_steps(n_control = 10)
+  random_steps(n_control = 100)
 
 #We have our random steps, now we need to extract the habitat variables at the end of each step
 head(steps_randr)
 
-sr <- steps_randr %>% drop_na() %>% dplyr::filter(case_ == FALSE) %>% dplyr::select(-c(pland, ed, pd, shape_mn)) %>% mutate(ID = 1:n())
+sr <- steps_randr %>% drop_na() %>% dplyr::filter(case_ == FALSE) %>% dplyr::select(-c(pland, ed, pd, shape_mn)) %>% dplyr::mutate(ID = 1:n())
 st <- steps_randr %>% drop_na() %>% dplyr::filter(case_ == TRUE)
 #create a spatialpointsdataframe and extract from map
 sr2 <- st_as_sf(sr, coords = c("x2_", "y2_"), crs = st_crs(rmap)) %>% terra::extract(x = rmap, y = ., ID = F) %>% bind_cols(sr) %>% 
-mutate(class = if_else(savclass_2 == 1,2,1)) %>% drop_na() %>% dplyr::select(-savclass_2)
+mutate(class = if_else(rmap_dense == 1,2,1)) %>% drop_na() %>% dplyr::select(-rmap_dense)
 
 #run landscape metrics on points
 rcoord <- as.data.frame(cbind(sr2$x2_, sr2$y2_))
 rcoord_sf <- st_as_sf(rcoord, coords = c("V1", "V2"), crs = st_crs(rmap))
 
-plan(multisession)  # Use multisession to run on multiple cores
+plan(multisession, workers = max(1, parallel::detectCores() - 1))  # Use multisession to run on multiple cores
 
 
 result_metr <- 1:nrow(rcoord_sf) %>% future_map(
   function(i) {
-    rmap_r <- rast("Data/Rankin_map.tif")
+    rmap_r <- rast("Data/Maps/rmap_dense.tif")
     sample_lsm(
       rmap_r,
       y = st_geometry(rcoord_sf[i, ]),  # Ensure geometry is passed
-      size = 5,
+      size = 15,
       what = c(
         "lsm_c_pd", "lsm_c_ed",
         "lsm_c_division",
@@ -126,6 +128,7 @@ steps_finalr <- strue %>%
     state_f = factor(state)
   ) %>% drop_na()
 str(steps_finalr)
+write.csv(steps_finalr, file = 'Data/issf_rankin_dat_100.csv')
 # Fit the iSSF using conditional logistic regression (clogit).
 issf_modelr <- steps_finalr %>%
   drop_na() %>% 
@@ -144,11 +147,15 @@ issf_modelr <- steps_finalr %>%
   )
 
 summary(issf_modelr)
+mean(steps_finalr$sl_)
 
 #Plotting!
 # --- Define Constants (Assuming these are still in your R environment) ---
-SL_REF <- 6.15 
-SL_RANGE <- seq(0.1, 12.2, length.out = 100)
+mean(steps_finalr$sl_)
+max(steps_finalr$sl_)
+min(steps_finalr$ta_)
+SL_REF <- 21.15 
+SL_RANGE <- seq(0.1, 439.39, length.out = 100)
 Z_RANGE <- seq(-2, 2, length.out = 100)
 N_POINTS <- length(SL_RANGE) # 100
 N_POINTS_Z <- length(Z_RANGE)
@@ -159,7 +166,7 @@ ALL_HABITAT_VARS <- c("pland_z", "ed_z", "pd_z", "shape_mn_z")
 # --- (Needs to be run first to define rss_sl) ---
 # -----------------------------------------------------------------
 
-# --- x1: Test data (varying sl_) - 100 rows ---
+# --- x1: Test data (varying sl_) - 200 rows ---
 p_sl_x1 <- data.frame(
   sl_ = SL_RANGE, 
   ta_ = rep(0, N_POINTS),             
@@ -192,6 +199,65 @@ plot_sl <- ggplot(rss_sl$df, aes(x = sl_x1, y = log_rss)) +
     y = "Log Relative Selection Strength"
   )
 print(plot_sl)
+
+plot_habitat_log_rss_r <- function(var_name, title_name) {
+  
+  N_POINTS <- length(Z_RANGE)
+  
+  # --- x1: Test data (varying habitat var, fixed sl_=SL_REF, state_f=1) ---
+  p_hab_x1 <- data.frame(
+    VARYING_VAR = Z_RANGE, 
+    sl_ = rep(SL_REF, N_POINTS), 
+    ta_ = rep(0, N_POINTS), 
+    state_f = rep(STATE_REF, N_POINTS),
+    class = rep(CLASS_REF, N_POINTS)
+  )
+  names(p_hab_x1)[1] <- var_name
+  
+  # Add OTHER habitat variables fixed at Z=0
+  fixed_hab_vars <- setdiff(ALL_HABITAT_VARS, var_name)
+  for (h_var in fixed_hab_vars) {
+    p_hab_x1[[h_var]] <- rep(0, N_POINTS)
+  }
+  
+  # --- x2: Reference data (1 row, fixed at Z=0) ---
+  # Reference: Mean sl, straight ta, State 1, Class 1, Z=0 for ALL habitat vars
+  p_hab_x2 <- data.frame(
+    sl_ = SL_REF, ta_ = 0, 
+    state_f = STATE_REF,
+    class = CLASS_REF
+  )
+  for (h_var in ALL_HABITAT_VARS) {
+    p_hab_x2[[h_var]] <- 0
+  }
+  
+  rss_hab <- log_rss(issf_modelr, x1 = p_hab_x1, x2 = p_hab_x2, ci = 'se')
+  
+  # Plot
+  ggplot(rss_hab$df, aes(x = get(paste0(var_name, "_x1")), y = log_rss)) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_line(linewidth = 1.2, color = "darkgreen") +
+    # Add the CI ribbon (assuming lwr/upr are present)
+    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2, fill = "darkgreen") +
+    theme_bw() +
+    labs(
+      title = paste("Log-RSS for", title_name),
+      x = paste0(title_name, " (Standardized Z-Score)"),
+      y = "Log Relative Selection Strength"
+    )
+}
+
+#PLAND
+plot_PLAND_r <- plot_habitat_log_rss_r('pland_z', 'PLAND')
+print(plot_PLAND_r)
+
+#ED
+plot_ed_r <- plot_habitat_log_rss_r('ed_z', 'Edge Density')
+print(plot_ed_r)
+
+#PD
+plot_pd_r <- plot_habitat_log_rss_r('pd_z', 'Patch Density')
+print(plot_pd_r)
 
 #habitat selection
 #' Calculates and plots the difference in log-RSS (State 2 - State 1) for a given habitat variable
@@ -273,31 +339,40 @@ str(strue)
 strue1 <- strue %>% drop_na()
 median(strue1$pland)
 sd(strue1$pland)
-plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 23.4859, 75.67568)
+plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 15.62, 68.31)
 print(plot_pland_interaction)
 
 #PD
 median(strue1$pd)
 sd(strue1$pd)
-plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 9548.752,11326.31)
+plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 26111.54,47022.38)
 print(plot_pd_interaction)
 
 #Shape_mn
 median(strue1$shape_mn)
 sd(strue1$shape_mn)
-plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape",0.3579983,1.485221)
+plot_shape_interaction <- plot_interaction_effect("shape_mn_z", "Mean Shape",0.189,1.365)
 print(plot_shape_interaction)
+
+#ED
+median(strue1$ed)
+sd(strue1$ed)
+plot_ed_interaction <- plot_interaction_effect("ed_z", "Edge Density", 2340.15,9866.4)
+print(plot_ed_interaction)
 
 #amazing!!!! Let's save these plots and run for Johnson
 ggsave(filename = 'Results/iSSF_sl_Rankin.png', plot_sl, dpi = 300, height = 5, width = 5)
 ggsave(filename = 'Results/iSSF_pland_HMM_Rankin.png', plot_pland_interaction, dpi = 300, height = 5, width = 5)
 ggsave(filename = 'Results/iSSF_pd_HMM_Rankin.png', plot_pd_interaction, dpi = 300, height = 5, width = 5)
 ggsave(filename = 'Results/iSSF_shape_HMM_Rankin.png', plot_shape_interaction, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Results/iSSF_ed_HMM_Rankin.png', plot_ed_interaction, dpi = 300, height = 5, width = 5)
 
+#ED, PD, PLAND, sl are significant, no class interaction effects
 
 ####Johnson
-jdat <- read.csv('Results/Johnson_full_hmm.csv')
-jmap <- rast('Data/Johnson_map.tif')
+jdat <- read.csv('Data/Johnson_full_hmm.csv')
+jmap <- rast('Data/Maps/jmap_dense.tif')
+plot(jmap)
 str(jdat)
 
 ?make_track
@@ -326,29 +401,30 @@ steps_obsj <- fish_trackj %>%
   steps(keep_cols = 'end') %>% 
   dplyr::filter(!is.na(ta_))
 
-# Generate random steps (10 random steps for every 1 observed step)
+# Generate random steps (100 random steps for every 1 observed step)
+set.seed(19)
 steps_randj <- steps_obsj %>%
-  random_steps(n_control = 10)
+  random_steps(n_control = 100)
 
 #We have our random steps, now we need to extract the habitat variables at the end of each step
 head(steps_randr)
 
-sj <- steps_randj %>% drop_na() %>% dplyr::filter(case_ == FALSE) %>% dplyr::select(-c(pland, ed, pd, shape_mn)) %>% mutate(ID = 1:n())
+sj <- steps_randj %>% drop_na() %>% dplyr::filter(case_ == FALSE) %>% dplyr::select(-c(pland, ed, pd, shape_mn)) %>% dplyr::mutate(ID = 1:n())
 stj <- steps_randj %>% drop_na() %>% dplyr::filter(case_ == TRUE)
 #create a spatialpointsdataframe and extract from map
 sj2 <- st_as_sf(sj, coords = c("x2_", "y2_"), crs = st_crs(jmap)) %>% terra::extract(x = jmap, y = ., ID = F) %>% bind_cols(sj) %>% 
-  mutate(class = if_else(johnclass2 == 1,2,1)) %>% drop_na() %>% dplyr::select(-johnclass2)
+  mutate(class = if_else(layer == 1,2,1)) %>% drop_na() %>% dplyr::select(-layer)
 
 #run landscape metrics on points
 jcoord <- as.data.frame(cbind(sj2$x2_, sj2$y2_))
 jcoord_sf <- st_as_sf(jcoord, coords = c("V1", "V2"), crs = st_crs(jmap))
 
-plan(multisession)  # Use multisession to run on multiple cores
+plan(multisession, workers = max(1, parallel::detectCores() - 1))  # Use multisession to run on multiple cores
 
 
 result_metj <- 1:nrow(jcoord_sf) %>% future_map(
   function(i) {
-    jmap_r <- rast("Data/Johnson_map.tif")
+    jmap_r <- rast("Data/Maps/jmap_dense.tif")
     sample_lsm(
       jmap_r,
       y = st_geometry(jcoord_sf[i, ]),  # Ensure geometry is passed
@@ -410,7 +486,7 @@ steps_finalj <- sjtrue %>%
     state_f = factor(state)
   ) %>% drop_na()
 
-write.csv(steps_finalj, file = 'Data/iSSF_Johnson.csv')
+write.csv(steps_finalj, file = 'Data/iSSF_johnson_data_100.csv')
 # Fit the iSSF using conditional logistic regression (clogit).
 issf_modelj <- steps_finalj %>%
   drop_na() %>% 
@@ -431,7 +507,9 @@ issf_modelj <- steps_finalj %>%
 summary(issf_modelj)
 max(steps_finalj$sl_)
 #Plotting!
-SL_REF <- 25.1 # Example: Replace with the actual mean step length from your data
+max(steps_finalj$sl_)
+mean(steps_finalj$sl_)
+SL_REF <- 12.02 # Example: Replace with the actual mean step length from your data
 SL_RANGE <- seq(0, 380, length.out = 100) # Example: Replace with the actual min/max step length range
 Z_RANGE <- seq(-2, 2, length.out = 100) # Standard z-score range
 ALL_HABITAT_VARS <- c("pland_z", "ed_z", "pd_z", "shape_mn_z")
@@ -665,6 +743,13 @@ print(plot_pd_interactionj)
 #ED
 plot_ed_interactionj <- plot_interaction_effect("ed_z", "Edge Density")
 print(plot_ed_interactionj)
+
+#Shape
+plot_shape_interactionj <- plot_interaction_effect("shape_mn_z", "Mean Shape")
+print(plot_shape_interactionj)
+
+plot_class_interactionj <- plot_interaction_effect("class", "Class")
+print(plot_shape_interactionj)
 
 ggsave(filename = 'Results/iSSF_PD_HMM_Johnson.png', plot_pd_interactionj, dpi = 300, height = 5, width = 5)
 ggsave(filename = 'Results/iSSF_ed_HMM_Johnson.png', plot_ed_interactionj, dpi = 300, height = 5, width = 5)
