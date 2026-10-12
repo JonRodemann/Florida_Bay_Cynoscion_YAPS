@@ -129,6 +129,9 @@ steps_finalr <- strue %>%
   ) %>% drop_na()
 str(steps_finalr)
 write.csv(steps_finalr, file = 'Data/issf_rankin_dat_100.csv')
+
+steps_finalr <- read.csv('Data/issf_rankin_dat_100.csv')
+str(steps_finalr)
 # Fit the iSSF using conditional logistic regression (clogit).
 issf_modelr <- steps_finalr %>%
   drop_na() %>% 
@@ -154,12 +157,14 @@ mean(steps_finalr$sl_)
 mean(steps_finalr$sl_)
 max(steps_finalr$sl_)
 min(steps_finalr$ta_)
-SL_REF <- 21.15 
-SL_RANGE <- seq(0.1, 439.39, length.out = 100)
-Z_RANGE <- seq(-2, 2, length.out = 100)
+SL_REF <- 20.02 
+SL_RANGE <- seq(0.1, 449.97, length.out = 100)
+Z_RANGE <- seq(-3.14, 3.14, length.out = 100)
 N_POINTS <- length(SL_RANGE) # 100
 N_POINTS_Z <- length(Z_RANGE)
 ALL_HABITAT_VARS <- c("pland_z", "ed_z", "pd_z", "shape_mn_z")
+STATE_REF <- 1
+CLASS_REF <- 2
 
 # -----------------------------------------------------------------
 # --- 1. Step Length Selection Curve (sl_ and I(sl_^2)) ---
@@ -336,7 +341,7 @@ plot_interaction_effect <- function(var_name, title_name, sdd, meand) {
 
 #PLAND
 str(strue)
-strue1 <- strue %>% drop_na()
+strue1 <- steps_finalr %>% drop_na()
 median(strue1$pland)
 sd(strue1$pland)
 plot_pland_interaction <- plot_interaction_effect("pland_z", "PLAND", 15.62, 68.31)
@@ -345,7 +350,7 @@ print(plot_pland_interaction)
 #PD
 median(strue1$pd)
 sd(strue1$pd)
-plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 26111.54,47022.38)
+plot_pd_interaction <- plot_interaction_effect("pd_z", "Patch Density", 26220.37,47016.52)
 print(plot_pd_interaction)
 
 #Shape_mn
@@ -357,17 +362,100 @@ print(plot_shape_interaction)
 #ED
 median(strue1$ed)
 sd(strue1$ed)
-plot_ed_interaction <- plot_interaction_effect("ed_z", "Edge Density", 2340.15,9866.4)
+plot_ed_interaction <- plot_interaction_effect("ed_z", "Edge Density", 2345.28,9864.2)
 print(plot_ed_interaction)
 
-#amazing!!!! Let's save these plots and run for Johnson
-ggsave(filename = 'Results/iSSF_sl_Rankin.png', plot_sl, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_pland_HMM_Rankin.png', plot_pland_interaction, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_pd_HMM_Rankin.png', plot_pd_interaction, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_shape_HMM_Rankin.png', plot_shape_interaction, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_ed_HMM_Rankin.png', plot_ed_interaction, dpi = 300, height = 5, width = 5)
+plot_categorical_interaction <- function(cat_var_name, cat_levels, title_name) {
+  
+  # --- 1. Create x1 (Test Data: All combinations of State and Habitat Category) ---
+  # expand.grid creates a dataframe with every combination of your categories
+  p_hab_x1 <- expand.grid(
+    state_f = factor(c("1", "2"), levels = c("1", "2")),
+    TEMP_CAT = factor(cat_levels, levels = cat_levels)
+  )
+  # Rename the temporary column to match your actual model variable
+  names(p_hab_x1)[2] <- cat_var_name
+  
+  # Add constant step parameters
+  p_hab_x1$sl_ <- SL_REF
+  p_hab_x1$ta_ <- 0
+  
+  # Set all other continuous habitat variables to 0 (mean)
+  fixed_hab_vars <- setdiff(ALL_HABITAT_VARS, cat_var_name)
+  for (h_var in fixed_hab_vars) {
+    p_hab_x1[[h_var]] <- 0
+  }
+  
+  # --- 2. Create x2 (Reference Data: 1 row, fixed at State 1 and baseline category) ---
+  p_hab_x2 <- data.frame(
+    sl_ = SL_REF, 
+    ta_ = 0, 
+    state_f = factor("1", levels = c("1", "2"))
+  )
+  # Set the reference to the first level provided (e.g., "sparse")
+  p_hab_x2[[cat_var_name]] <- factor(cat_levels[1], levels = cat_levels)
+  
+  for (h_var in fixed_hab_vars) {
+    p_hab_x2[[h_var]] <- 0
+  }
+  
+  # --- 3. Calculate log-RSS for both states relative to the baseline ---
+  rss_hab <- log_rss(issf_modelr, x1 = p_hab_x1, x2 = p_hab_x2, ci = 'se')
+  df <- rss_hab$df
+  
+  # --- 4. Separate states and calculate difference ---
+  # Dynamically get the generated column name (e.g., habitat_class_x1)
+  x1_col_name <- paste0(cat_var_name, "_x1")
+  
+  df_state1 <- df %>% filter(state_f_x1 == "1") %>% arrange(get(x1_col_name))
+  df_state2 <- df %>% filter(state_f_x1 == "2") %>% arrange(get(x1_col_name))
+  
+  # Calculate SE of the difference
+  se_diff <- sqrt(((df_state1$upr - df_state1$lwr)/3.92)^2 + ((df_state2$upr - df_state2$lwr)/3.92)^2)
+  
+  # Create a new data frame for the difference plot
+  df_diff <- data.frame(
+    category = df_state1[[x1_col_name]],
+    log_rss_diff = df_state2$log_rss - df_state1$log_rss,
+    lwr_diff = (df_state2$log_rss - df_state1$log_rss) - 1.96 * se_diff,
+    upr_diff = (df_state2$log_rss - df_state1$log_rss) + 1.96 * se_diff
+  )
+  
+  # --- 5. Plot the Difference with Error Bars ---
+  ggplot(df_diff, aes(x = category, y = log_rss_diff)) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_errorbar(aes(ymin = lwr_diff, ymax = upr_diff), width = 0.2, linewidth = 1, color = "darkgreen") +
+    geom_point(size = 4, color = "darkgreen") +
+    theme_bw() +
+    labs(
+      title = paste("State-Dependent Effect: Difference in", title_name, "Selection"),
+      x = title_name,
+      y = "log-RSS Difference (State 2 - State 1)"
+    ) +
+    theme(
+      axis.text.x = element_text(size = 12),
+      axis.title = element_text(size = 13)
+    )
+}
 
-#ED, PD, PLAND, sl are significant, no class interaction effects
+#Class
+str(steps_finalr)
+class_int_r <-
+  plot_categorical_interaction(
+    cat_var_name = "class", 
+    cat_levels = c(1, 2), # ensure these exactly match your model levels
+    title_name = "Habitat Class"
+  )
+plot(class_int_r)
+
+#amazing!!!! Let's save these plots and run for Johnson
+ggsave(filename = 'Plots/iSSF_sl_Rankin.png', plot_sl, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_pland_Rankin.png', plot_PLAND_r, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_pd_Rankin.png', plot_pd_r, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Results/iSSF_shape_HMM_Rankin.png', plot_shape_interaction, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_ed_Rankin.png', plot_ed_r, dpi = 300, height = 5, width = 5)
+
+
 
 ####Johnson
 jdat <- read.csv('Data/Johnson_full_hmm.csv')
@@ -488,6 +576,7 @@ steps_finalj <- sjtrue %>%
 
 write.csv(steps_finalj, file = 'Data/iSSF_johnson_data_100.csv')
 # Fit the iSSF using conditional logistic regression (clogit).
+steps_finalj <- read.csv('Data/iSSF_johnson_data_100.csv')
 issf_modelj <- steps_finalj %>%
   drop_na() %>% 
   fit_clogit(case_ ~
@@ -511,7 +600,7 @@ max(steps_finalj$sl_)
 mean(steps_finalj$sl_)
 SL_REF <- 12.02 # Example: Replace with the actual mean step length from your data
 SL_RANGE <- seq(0, 380, length.out = 100) # Example: Replace with the actual min/max step length range
-Z_RANGE <- seq(-2, 2, length.out = 100) # Standard z-score range
+Z_RANGE <- seq(-3.14, 3.14, length.out = 100) # Standard z-score range
 ALL_HABITAT_VARS <- c("pland_z", "ed_z", "pd_z", "shape_mn_z")
 CLASS_REF <- factor("1", levels = c("1", "2")) 
 STATE_REF <- factor("1", levels = c("1", "2"))
@@ -751,9 +840,90 @@ print(plot_shape_interactionj)
 plot_class_interactionj <- plot_interaction_effect("class", "Class")
 print(plot_shape_interactionj)
 
-ggsave(filename = 'Results/iSSF_PD_HMM_Johnson.png', plot_pd_interactionj, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_ed_HMM_Johnson.png', plot_ed_interactionj, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_shape_Johnson.png', plot_shape_mnj, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_pland_Johnson.png', plot_plandj, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_pd_Johnson.png', plot_pdj, dpi = 300, height = 5, width = 5)
-ggsave(filename = 'Results/iSSF_ed_Johnson.png', plot_edj, dpi = 300, height = 5, width = 5)
+plot_categorical_interaction <- function(cat_var_name, cat_levels, title_name) {
+  
+  # --- 1. Create x1 (Test Data: All combinations of State and Habitat Category) ---
+  # expand.grid creates a dataframe with every combination of your categories
+  p_hab_x1 <- expand.grid(
+    state_f = factor(c("1", "2"), levels = c("1", "2")),
+    TEMP_CAT = factor(cat_levels, levels = cat_levels)
+  )
+  # Rename the temporary column to match your actual model variable
+  names(p_hab_x1)[2] <- cat_var_name
+  
+  # Add constant step parameters
+  p_hab_x1$sl_ <- SL_REF
+  p_hab_x1$ta_ <- 0
+  
+  # Set all other continuous habitat variables to 0 (mean)
+  fixed_hab_vars <- setdiff(ALL_HABITAT_VARS, cat_var_name)
+  for (h_var in fixed_hab_vars) {
+    p_hab_x1[[h_var]] <- 0
+  }
+  
+  # --- 2. Create x2 (Reference Data: 1 row, fixed at State 1 and baseline category) ---
+  p_hab_x2 <- data.frame(
+    sl_ = SL_REF, 
+    ta_ = 0, 
+    state_f = factor("1", levels = c("1", "2"))
+  )
+  # Set the reference to the first level provided (e.g., "sparse")
+  p_hab_x2[[cat_var_name]] <- factor(cat_levels[1], levels = cat_levels)
+  
+  for (h_var in fixed_hab_vars) {
+    p_hab_x2[[h_var]] <- 0
+  }
+  
+  # --- 3. Calculate log-RSS for both states relative to the baseline ---
+  rss_hab <- log_rss(issf_modelj, x1 = p_hab_x1, x2 = p_hab_x2, ci = 'se')
+  df <- rss_hab$df
+  
+  # --- 4. Separate states and calculate difference ---
+  # Dynamically get the generated column name (e.g., habitat_class_x1)
+  x1_col_name <- paste0(cat_var_name, "_x1")
+  
+  df_state1 <- df %>% filter(state_f_x1 == "1") %>% arrange(get(x1_col_name))
+  df_state2 <- df %>% filter(state_f_x1 == "2") %>% arrange(get(x1_col_name))
+  
+  # Calculate SE of the difference
+  se_diff <- sqrt(((df_state1$upr - df_state1$lwr)/3.92)^2 + ((df_state2$upr - df_state2$lwr)/3.92)^2)
+  
+  # Create a new data frame for the difference plot
+  df_diff <- data.frame(
+    category = df_state1[[x1_col_name]],
+    log_rss_diff = df_state2$log_rss - df_state1$log_rss,
+    lwr_diff = (df_state2$log_rss - df_state1$log_rss) - 1.96 * se_diff,
+    upr_diff = (df_state2$log_rss - df_state1$log_rss) + 1.96 * se_diff
+  )
+  
+  # --- 5. Plot the Difference with Error Bars ---
+  ggplot(df_diff, aes(x = category, y = log_rss_diff)) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_errorbar(aes(ymin = lwr_diff, ymax = upr_diff), width = 0.2, linewidth = 1, color = "darkgreen") +
+    geom_point(size = 4, color = "darkgreen") +
+    theme_bw() +
+    labs(
+      title = paste("State-Dependent Effect: Difference in", title_name, "Selection"),
+      x = title_name,
+      y = "log-RSS Difference (State 2 - State 1)"
+    ) +
+    theme(
+      axis.text.x = element_text(size = 12),
+      axis.title = element_text(size = 13)
+    )
+}
+
+class_int_j <-
+  plot_categorical_interaction(
+    cat_var_name = "class", 
+    cat_levels = c(1, 2), # ensure these exactly match your model levels
+    title_name = "Habitat Class"
+  )
+plot(class_int_j)
+
+ggsave(filename = 'Plots/iSSF_shape_HMM_Johnson.png', plot_shape_interactionj, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_ta_Johnson.png', plot_ta, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_shape_Johnson.png', plot_shape_mnj, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_sl_Johnson.png',plot_slj, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_class_Johnson.png', class_int_j, dpi = 300, height = 5, width = 5)
+ggsave(filename = 'Plots/iSSF_class_Rankin.png', class_int_r, dpi = 300, height = 5, width = 5)
